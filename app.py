@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import torch
 import torch.nn as nn
-import joblib 
-import pickle 
+import joblib # joblib все еще нужен для некоторых частей, если вы его используете
+import pickle # Добавьте импорт pickle
 import numpy as np
 
 # --- 1. Re-define the NBARegressionModel class ---
