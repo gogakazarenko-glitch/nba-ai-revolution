@@ -1,0 +1,4 @@
+pandas
+torch
+nba_api
+scikit-learn
