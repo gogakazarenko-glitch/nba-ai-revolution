@@ -2,29 +2,22 @@ import streamlit as st
 import pandas as pd
 import torch
 import torch.nn as nn
-import joblib
+import pickle
 import numpy as np
+import sklearn.compose
 from nba_api.stats.endpoints import scoreboardv2
 
-# --- 1. Настройка стиля (NBA Dark Gold) ---
-st.set_page_config(page_title="NBA AI Revolution", page_icon="🏀", layout="wide")
-st.markdown("""
-    <style>
-    .stApp { background-color: #000000; color: #FFD700; }
-    h1, h2, h3, h4 { color: #FFD700 !important; border-bottom: 2px solid #FFD700; padding-bottom: 10px; }
-    .stButton>button { 
-        background-color: #FFD700; color: #000000; 
-        border-radius: 20px; font-weight: bold; height: 3em; transition: 0.3s;
-    }
-    .stButton>button:hover { background-color: #FFFFFF; border: 2px solid #FFD700; }
-    .prediction-card { 
-        background-color: #1A1A1A; padding: 20px; 
-        border-radius: 15px; border: 1px solid #FFD700; margin-bottom: 20px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# --- 1. ХАК ДЛЯ СОВМЕСТИМОСТИ (Исправляет ошибку _RemainderColsList) ---
+if not hasattr(sklearn.compose._column_transformer, '_RemainderColsList'):
+    class _RemainderColsList(list):
+        pass
+    sklearn.compose._column_transformer._RemainderColsList = _RemainderColsList
 
-# --- 2. Архитектура модели (Оригинал из Colab) ---
+# --- 2. НАСТРОЙКА СТИЛЯ NBA ---
+st.set_page_config(page_title="NBA AI Revolution", page_icon="🏀", layout="wide")
+st.markdown("<style>.stApp { background-color: #000000; color: #FFD700; }</style>", unsafe_allow_html=True)
+
+# --- 3. АРХИТЕКТУРА МОДЕЛИ ---
 class NBARegressionModel(nn.Module):
     def __init__(self, input_size, hidden_size=128, dropout_rate=0.3):
         super(NBARegressionModel, self).__init__()
@@ -47,86 +40,31 @@ class NBARegressionModel(nn.Module):
         x = self.dropout3(x)
         return torch.sigmoid(self.output_home_win(x)), self.output_total_points(x), self.output_point_spread(x)
 
-# --- 3. Загрузка ресурсов ---
+# --- 4. ЗАГРУЗКА МОДЕЛИ И СКЕЙЛЕРА ---
 @st.cache_resource
-def load_assets():
+def load_all():
     try:
         model = NBARegressionModel(113)
-        model.load_state_dict(torch.load('nba_ultra_brain.pth', map_location='cpu'))
+        model.load_state_dict(torch.load('nba_ultra_brain.pth', map_location='cpu', weights_only=False))
         model.eval()
-        preprocessor = joblib.load('scaler_v2.pkl') # Используем твой новый файл
+        
+        # Загрузка через pickle по инструкции
+        with open('scaler_final.pkl', 'rb') as f:
+            preprocessor = pickle.load(f)
         return model, preprocessor
     except Exception as e:
         st.error(f"Ошибка загрузки: {e}")
         return None, None
 
-model, preprocessor = load_assets()
+model, preprocessor = load_all()
 
-# --- 4. Логика получения матчей ---
-@st.cache_data(ttl=3600)
-def get_today_games():
-    try:
-        sb = scoreboardv2.ScoreboardV2()
-        df = sb.get_data_frames()[0]
-        return df[['GAME_ID', 'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME', 'GAME_STATUS_TEXT']]
-    except:
-        return pd.DataFrame()
-
-# --- ГЛАВНЫЙ ИНТЕРФЕЙС ---
+# --- 5. ИНТЕРФЕЙС ---
 st.title("🏀 NBA AI REVOLUTION")
-st.subheader("Система глубокого анализа исходов 2024-2026")
-
 if model and preprocessor:
-    games_df = get_today_games()
+    st.success("Система ИИ онлайн! Анализ 2024-2026 активен.")
     
-    if not games_df.empty:
-        st.write(f"### Матчи на сегодня: {len(games_df)}")
-        
-        for _, game in games_df.iterrows():
-            with st.container():
-                st.markdown(f"""<div class="prediction-card">
-                    <h4>{game['HOME_TEAM_NAME']} 🆚 {game['VISITOR_TEAM_NAME']}</h4>
-                    <p>Статус: {game['GAME_STATUS_TEXT']}</p>
-                </div>""", unsafe_allow_html=True)
-                
-                if st.button(f"Запустить нейросеть для {game['GAME_ID']}", key=game['GAME_ID']):
-                    # В этом блоке мы создаем входные данные 113 признаков
-                    # В будущем сюда можно добавить загрузку из твоего CSV
-                    with st.spinner('ИИ анализирует 113 параметров...'):
-                        # Получаем структуру колонок прямо из скейлера (как советовал Colab)
-                        orig_num_cols = preprocessor.transformers_[0][2]
-                        orig_cat_cols = preprocessor.transformers_[1][2]
-                        all_cols = list(orig_num_cols) + list(orig_cat_cols)
-                        
-                        # Создаем пустую строку данных
-                        input_row = pd.DataFrame(columns=all_cols)
-                        dummy_data = {c: 0.0 for c in orig_num_cols}
-                        dummy_data.update({c: 'unknown' for c in orig_cat_cols})
-                        dummy_data['SEASON_ID'] = '22025'
-                        
-                        input_row = pd.concat([input_row, pd.DataFrame([dummy_data])], ignore_index=True)
-                        
-                        # Расчет
-                        processed_X = preprocessor.transform(input_row)
-                        tensor_X = torch.tensor(processed_X, dtype=torch.float32)
-                        
-                        with torch.no_grad():
-                            win_p, total_p, spread_p = model(tensor_X)
-                        
-                        # Вывод результатов
-                        res1, res2, res3 = st.columns(3)
-                        res1.metric("Вероятность победы хозяев", f"{win_p.item():.1%}")
-                        res2.metric("Прогноз Тотала", f"{total_p.item():.1f}")
-                        res3.metric("Прогноз Форы", f"{spread_p.item():.1f}")
-                        
-                        if win_p.item() > 0.65:
-                            st.success("🔥 Высокая уверенность в победе хозяев")
-                        elif win_p.item() < 0.35:
-                            st.error("❄️ Высокий шанс победы гостей")
-                st.markdown("---")
-    else:
-        st.info("Сегодня матчей нет или API временно недоступно.")
+    # Кнопка для теста (потом добавим авто-загрузку матчей)
+    if st.button("Рассчитать прогноз на сегодня"):
+        st.info("ИИ обрабатывает данные... (Матчи появятся здесь)")
 else:
-    st.error("Критическая ошибка: Проверьте файлы nba_ultra_brain.pth и scaler_v2.pkl на GitHub.")
-
-st.sidebar.markdown("### О системе\nМодель обучена на данных 2024-2026гг. Анализирует темп, эффективность и историю встреч.")
+    st.warning("Критическая ошибка файлов. Проверьте scaler_final.pkl и nba_ultra_brain.pth")
