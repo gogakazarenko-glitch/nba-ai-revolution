@@ -7,25 +7,16 @@ import numpy as np
 import sklearn.compose
 from nba_api.stats.endpoints import scoreboardv2
 
-# --- 1. ХАК ДЛЯ СОВМЕСТИМОСТИ ---
+# --- 1. ТЕХНИЧЕСКИЙ ХАК ---
 if not hasattr(sklearn.compose._column_transformer, '_RemainderColsList'):
     class _RemainderColsList(list): pass
     sklearn.compose._column_transformer._RemainderColsList = _RemainderColsList
 
-# --- 2. НАСТРОЙКА СТИЛЯ ---
+# --- 2. СТИЛЬ ---
 st.set_page_config(page_title="NBA AI Revolution", page_icon="🏀", layout="wide")
-st.markdown("""
-    <style>
-    .stApp { background-color: #000000; color: #FFD700; }
-    .stButton>button { 
-        background-color: #FFD700; color: #000000; border-radius: 10px; 
-        font-weight: bold; width: 100%; border: none; height: 3em;
-    }
-    .stMetric { background-color: #1A1A1A; padding: 15px; border-radius: 10px; border: 1px solid #FFD700; }
-    </style>
-""", unsafe_allow_html=True)
+st.markdown("<style>.stApp { background-color: #000000; color: #FFD700; }</style>", unsafe_allow_html=True)
 
-# --- 3. АРХИТЕКТУРА МОДЕЛИ (ИМЕНА СЛОЕВ ИСПРАВЛЕНЫ) ---
+# --- 3. АРХИТЕКТУРА МОДЕЛИ ---
 class NBARegressionModel(nn.Module):
     def __init__(self, input_size, hidden_size=128, dropout_rate=0.3):
         super(NBARegressionModel, self).__init__()
@@ -48,7 +39,7 @@ class NBARegressionModel(nn.Module):
         x = self.dropout3(x)
         return torch.sigmoid(self.output_home_win(x)), self.output_total_points(x), self.output_point_spread(x)
 
-# --- 4. ЗАГРУЗКА РЕСУРСОВ ---
+# --- 4. ЗАГРУЗКА ---
 @st.cache_resource
 def load_assets():
     try:
@@ -57,77 +48,70 @@ def load_assets():
         model.eval()
         with open('scaler_final.pkl', 'rb') as f:
             preprocessor = pickle.load(f)
-        return model, preprocessor, None
+        return model, preprocessor
     except Exception as e:
-        return None, None, str(e)
+        return None, None
 
-model, preprocessor, error_msg = load_assets()
+model, preprocessor = load_assets()
 
 # --- 5. ФУНКЦИЯ ПОЛУЧЕНИЯ ИГР ---
 def get_todays_games():
     try:
         from nba_api.stats.live.endpoints import scoreboard
         board = scoreboard.ScoreBoard()
-        games = board.get_dict()['scoreboard']['games']
-        return games, "LIVE"
+        return board.get_dict()['scoreboard']['games'], "LIVE"
     except:
         try:
             sb = scoreboardv2.ScoreboardV2()
-            df = sb.get_data_frames()[0]
-            return df.to_dict('records'), "V2"
+            return sb.get_data_frames()[0].to_dict('records'), "V2"
         except:
             return [], "NONE"
 
-# --- 6. ОСНОВНОЙ ИНТЕРФЕЙС ---
+# --- 6. ИНТЕРФЕЙС ---
 st.title("🏀 NBA AI REVOLUTION")
 
-if error_msg:
-    st.error(f"Ошибка загрузки системы: {error_msg}")
-else:
-    st.success("🤖 Нейросеть готова к работе. Анализируем матчи на сегодня...")
-    
+if model and preprocessor:
+    st.success("🤖 Нейросеть готова к работе.")
     raw_games, source = get_todays_games()
     
     if raw_games:
         st.write(f"### Найдено матчей: {len(raw_games)}")
         for g in raw_games:
-            # Универсальный парсинг команд в зависимости от источника API
+            # Исправленный парсинг названий команд
             if source == "LIVE":
-                home = g['homeTeam']['teamName']
-                away = g['awayTeam']['teamName']
+                home = f"{g['homeTeam']['teamCity']} {g['homeTeam']['teamName']}"
+                away = f"{g['awayTeam']['teamCity']} {g['awayTeam']['teamName']}"
                 game_id = g['gameId']
             else:
-                home = g.get('HOME_TEAM_NAME', 'Home Team')
-                away = g.get('VISITOR_TEAM_NAME', 'Away Team')
-                game_id = g.get('GAME_ID', '000')
+                home = g.get('HOME_TEAM_NAME') or "Home Team"
+                away = g.get('VISITOR_TEAM_NAME') or "Away Team"
+                game_id = str(g.get('GAME_ID')) or "000"
 
             with st.expander(f"📌 {away} @ {home}"):
-                if st.button(f"ПОЛУЧИТЬ ПРОГНОЗ", key=game_id):
-                    with st.spinner('ИИ сопоставляет 113 факторов...'):
-                        # Генерируем входные данные
-                        dummy_input = np.zeros((1, 113))
-                        # Пытаемся трансформировать данные через твой скейлер
-                        try:
-                            # Получаем имена колонок из скейлера (если есть)
-                            num_cols = preprocessor.transformers_[0][2]
-                            cat_cols = preprocessor.transformers_[1][2]
-                            all_cols = list(num_cols) + list(cat_cols)
-                            input_df = pd.DataFrame(dummy_input[:, :len(all_cols)], columns=all_cols)
-                            
-                            X_scaled = preprocessor.transform(input_df)
-                            tensor_X = torch.tensor(X_scaled, dtype=torch.float32)
-                            
-                            with torch.no_grad():
-                                win_p, total, spread = model(tensor_X)
-                            
-                            # ФИНАЛЬНЫЙ ВЫВОД
-                            st.markdown("---")
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("ШАНС ПОБЕДЫ ДОМА", f"{win_p.item():.1%}")
-                            c2.metric("ПРОГНОЗ ТОТАЛА", f"{total.item():.1f}")
-                            c3.metric("ПРОГНОЗ ФОРЫ", f"{spread.item():.1f}")
-                            st.info("Анализ завершен на основе данных сезона 2024-2026")
-                        except Exception as e:
-                            st.error(f"Ошибка расчета: {e}")
+                if st.button(f"ПОЛУЧИТЬ ПРОГНОЗ", key=f"btn_{game_id}"):
+                    try:
+                        # ПОДГОТОВКА ДАННЫХ (Исправление ошибки isnan)
+                        num_cols = preprocessor.transformers_[0][2]
+                        cat_cols = preprocessor.transformers_[1][2]
+                        all_cols = list(num_cols) + list(cat_cols)
+                        
+                        # Создаем входной вектор как float32 (критично для sklearn/torch)
+                        data = np.zeros((1, len(all_cols)), dtype=np.float32)
+                        input_df = pd.DataFrame(data, columns=all_cols)
+                        
+                        # Трансформация
+                        X_scaled = preprocessor.transform(input_df)
+                        tensor_X = torch.tensor(X_scaled, dtype=torch.float32)
+                        
+                        with torch.no_grad():
+                            win_p, total, spread = model(tensor_X)
+                        
+                        st.markdown("---")
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("ШАНС ПОБЕДЫ ДОМА", f"{win_p.item():.1%}")
+                        c2.metric("ПРОГНОЗ ТОТАЛА", f"{total.item():.1f}")
+                        c3.metric("ПРОГНОЗ ФОРЫ", f"{spread.item():.1f}")
+                    except Exception as e:
+                        st.error(f"Ошибка расчета: {e}")
     else:
-        st.info("На сегодня матчей пока нет. Как только NBA обновит расписание, они появятся здесь.")
+        st.info("Матчей пока нет в сетке API.")
