@@ -7,124 +7,90 @@ import numpy as np
 import sklearn.compose
 from nba_api.stats.endpoints import scoreboardv2
 
-# --- 1. ХАК ДЛЯ СОВМЕСТИМОСТИ (Исправляет ошибку _RemainderColsList) ---
+# --- 1. ТЕХНИЧЕСКИЙ ХАК ---
 if not hasattr(sklearn.compose._column_transformer, '_RemainderColsList'):
-    class _RemainderColsList(list):
-        pass
+    class _RemainderColsList(list): pass
     sklearn.compose._column_transformer._RemainderColsList = _RemainderColsList
 
-# --- 2. НАСТРОЙКА СТИЛЯ NBA ---
-st.set_page_config(page_title="NBA AI Revolution", page_icon="🏀", layout="wide")
-st.markdown("""
-    <style>
-    .stApp { background-color: #000000; color: #FFD700; }
-    .stButton>button { 
-        background-color: #FFD700; color: #000000; border-radius: 10px; 
-        font-weight: bold; width: 100%; border: none;
-    }
-    .stMetric { background-color: #1A1A1A; padding: 10px; border-radius: 10px; border: 1px solid #FFD700; }
-    </style>
-""", unsafe_allow_html=True)
+# --- 2. СТИЛЬ (ЧЕРНЫЙ И ЗОЛОТОЙ) ---
+st.set_page_config(page_title="NBA AI", page_icon="🏀", layout="wide")
+st.markdown("<style>.stApp { background-color: #000000; color: #FFD700; }</style>", unsafe_allow_html=True)
 
-# --- 3. АРХИТЕКТУРА МОДЕЛИ ---
+# --- 3. МОДЕЛЬ ---
 class NBARegressionModel(nn.Module):
-    def __init__(self, input_size, hidden_size=128, dropout_rate=0.3):
+    def __init__(self, input_size):
         super(NBARegressionModel, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.dropout1 = nn.Dropout(dropout_rate)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.dropout2 = nn.Dropout(dropout_rate)
-        self.fc3 = nn.Linear(hidden_size, hidden_size)
-        self.dropout3 = nn.Dropout(dropout_rate)
-        self.output_home_win = nn.Linear(hidden_size, 1)
-        self.output_total_points = nn.Linear(hidden_size, 1)
-        self.output_point_spread = nn.Linear(hidden_size, 1)
+        self.main = nn.Sequential(
+            nn.Linear(input_size, 128), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(128, 128), nn.ReLU(), nn.Dropout(0.3)
+        )
+        self.win = nn.Linear(128, 1)
+        self.total = nn.Linear(128, 1)
+        self.spread = nn.Linear(128, 1)
 
     def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = self.dropout1(x)
-        x = torch.relu(self.fc2(x))
-        x = self.dropout2(x)
-        x = torch.relu(self.fc3(x))
-        x = self.dropout3(x)
-        return torch.sigmoid(self.output_home_win(x)), self.output_total_points(x), self.output_point_spread(x)
+        features = self.main(x)
+        return torch.sigmoid(self.win(features)), self.total(features), self.spread(features)
 
-# --- 4. ЗАГРУЗКА МОДЕЛИ И СКЕЙЛЕРА ---
+# --- 4. ЗАГРУЗКА ---
 @st.cache_resource
-def load_all():
+def load_assets():
     try:
         model = NBARegressionModel(113)
-        # weights_only=False необходим для загрузки моделей, созданных в старых версиях torch/colab
         model.load_state_dict(torch.load('nba_ultra_brain.pth', map_location='cpu', weights_only=False))
         model.eval()
-        
         with open('scaler_final.pkl', 'rb') as f:
             preprocessor = pickle.load(f)
         return model, preprocessor
     except Exception as e:
-        st.error(f"Критическая ошибка загрузки файлов: {e}")
-        return None, None
+        return None, str(e)
 
-model, preprocessor = load_all()
+model_data = load_assets()
+model, preprocessor = model_data if isinstance(model_data[0], NBARegressionModel) else (None, None)
 
-# --- 5. ЛОГИКА ПОЛУЧЕНИЯ МАТЧЕЙ ---
-@st.cache_data(ttl=3600)
-def get_live_games():
+# --- 5. ПОЛУЧЕНИЕ МАТЧЕЙ (УЛУЧШЕННОЕ) ---
+def get_games():
     try:
-        sb = scoreboardv2.ScoreboardV2()
-        df = sb.get_data_frames()[0]
-        # Оставляем только нужные колонки для интерфейса
-        return df[['GAME_ID', 'HOME_TEAM_NAME', 'VISITOR_TEAM_NAME', 'GAME_STATUS_TEXT']]
-    except Exception as e:
-        st.error(f"Ошибка подключения к API NBA: {e}")
-        return pd.DataFrame()
+        from nba_api.stats.live.endpoints import scoreboard
+        games = scoreboard.ScoreBoard().get_dict()['scoreboard']['games']
+        return games
+    except:
+        try:
+            sb = scoreboardv2.ScoreboardV2()
+            return sb.get_dict()['resultSets'][0]['rowSet']
+        except:
+            return []
 
-# --- 6. ГЛАВНЫЙ ЭКРАН ---
+# --- 6. ИНТЕРФЕЙС ---
 st.title("🏀 NBA AI REVOLUTION")
-st.subheader("Прогноз исходов на основе нейросети (2024-2026)")
 
-if model and preprocessor:
-    st.success("✅ Система ИИ онлайн и готова к анализу!")
+if model:
+    st.success("ИИ готов. Анализируем текущий ростер...")
+    raw_games = get_games()
     
-    games = get_live_games()
-    
-    if not games.empty:
-        st.write(f"### Матчи на сегодня: {len(games)}")
-        for _, game in games.iterrows():
-            # Создаем удобную карточку для каждого матча
-            with st.expander(f"📌 {game['HOME_TEAM_NAME']} vs {game['VISITOR_TEAM_NAME']} (Статус: {game['GAME_STATUS_TEXT']})"):
-                if st.button(f"Запустить нейросеть для матча {game['GAME_ID']}", key=game['GAME_ID']):
-                    with st.spinner('Анализируем 113 статистических параметров...'):
-                        # Генерируем входной вектор (пока заглушка, в будущем подтянем реальные статы)
-                        dummy_input = np.zeros((1, 113))
-                        
-                        # Код Colab: получаем структуру колонок напрямую из препроцессора
-                        # Это гарантирует, что порядок признаков не нарушится
-                        try:
-                            # Пытаемся получить список колонок из скейлера
-                            orig_num_cols = preprocessor.transformers_[0][2]
-                            orig_cat_cols = preprocessor.transformers_[1][2]
-                            all_cols = list(orig_num_cols) + list(orig_cat_cols)
-                            
-                            # Создаем DataFrame с правильными названиями
-                            input_df = pd.DataFrame(dummy_input[:, :len(all_cols)], columns=all_cols)
-                            
-                            # Прогоняем через скейлер и модель
-                            X_scaled = preprocessor.transform(input_df)
-                            tensor_X = torch.tensor(X_scaled, dtype=torch.float32)
-                            
-                            with torch.no_grad():
-                                win_p, total, spread = model(tensor_X)
-                            
-                            # Красивый вывод метрик
-                            res_col1, res_col2, res_col3 = st.columns(3)
-                            res_col1.metric("Шанс победы дома", f"{win_p.item():.1%}")
-                            res_col2.metric("Прогноз Тотала", f"{total.item():.1f}")
-                            res_col3.metric("Прогноз Форы", f"{spread.item():.1f}")
-                            
-                        except Exception as e:
-                            st.error(f"Ошибка трансформации данных: {e}")
+    if raw_games:
+        for g in raw_games:
+            # Пытаемся достать названия команд из разных форматов API
+            try:
+                home = g.get('homeTeam', {}).get('teamName') or g[6]
+                away = g.get('awayTeam', {}).get('teamName') or g[7]
+                gid = g.get('gameId') or g[2]
+            except:
+                continue
+
+            with st.expander(f"➡️ {away} @ {home}"):
+                if st.button(f"Сделать прогноз", key=gid):
+                    # Заглушка данных для теста нейронки
+                    dummy = np.zeros((1, 113))
+                    X = torch.tensor(preprocessor.transform(dummy), dtype=torch.float32)
+                    with torch.no_grad():
+                        p, t, s = model(X)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Победа дома", f"{p.item():.1%}")
+                    col2.metric("Тотал", f"{t.item():.1f}")
+                    col3.metric("Фора", f"{s.item():.1f}")
     else:
-        st.info("На сегодня матчей NBA не найдено. База обновится автоматически.")
+        st.info("Матчи загружаются... Если пусто, попробуйте обновить страницу через минуту.")
 else:
-    st.warning("⚠️ Внимание: Система не смогла загрузить веса модели или препроцессор. Проверьте файлы на GitHub.")
+    st.error(f"Ошибка системы: {model_data[1]}")
