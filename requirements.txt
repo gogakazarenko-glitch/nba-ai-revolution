@@ -1,7 +1,7 @@
 streamlit
 pandas
 torch
+scikit-learn==1.6.1
 joblib
-scikit-learn
-nba_api
 numpy
+nba_api
