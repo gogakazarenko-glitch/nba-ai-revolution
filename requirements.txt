@@ -2,3 +2,6 @@ pandas
 torch
 nba_api
 scikit-learn
+streamlit
+matplotlib
+seaborn
